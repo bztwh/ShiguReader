@@ -12,83 +12,78 @@ const clientUtil = require("./clientUtil");
 const { getBaseName } = clientUtil;
 const dateFormat = require('dateformat');
 const AdminUtil = require("./AdminUtil");
+import { GlobalContext } from './globalContext'
+const util = require("@common/util");
+const classNames = require('classnames');
+
+
 
 export default class AdminPage extends Component {
     constructor(prop) {
         super(prop);
-        this.failedTimes = 0;
-        this.state = { prePath : null, dirs: [] };
+        this.state = { prePath: null, dirs: [] };
     }
 
     componentDidMount() {
-        if(this.failedTimes < 3) {
-            this.askCacheInfo();
-            this.requestHomePagePathes();
-            this.askMinifyQueue();
-        }
+        this.askCacheInfo();
+        this.requestHomePagePathes();
+        this.askMinifyQueue();
+        this.requestHistory();
     }
 
-    askMinifyQueue(){
-        Sender.post("/api/minifyZipQue", { }, res => {
-            if (!res.failed) {
-                let { minifyZipQue } = res;
-                this.setState({minifyZipQue})
-            }else{
-                this.failedTimes++;
+    requestHistory() {
+        Sender.post("/api/getHistory", {}, res => {
+            let { history } = res.json;
+            history = history || [];
+            history.forEach(e => {
+                e.time = parseInt(e.time);
+            })
+            this.setState({history})
+        });
+    }
+
+    askMinifyQueue() {
+        Sender.post("/api/minifyZipQue", {}, res => {
+            if (!res.isFailed()) {
+                let { minifyZipQue } = res.json;
+                this.setState({ minifyZipQue })
             }
         });
     }
 
     requestHomePagePathes() {
-        Sender.post("/api/homePagePath", { }, res => {
-            this.handleRes(res);
+        Sender.post("/api/homePagePath", {}, res => {
+            if (!res.isFailed()) {
+                let { dirs } = res.json;
+                this.setState({
+                    dirs: dirs || []
+                })
+            }
         });
     }
 
-    askCacheInfo(){
-        Sender.get("/api/cacheInfo", res => {
-            this.handleCacheRes(res);
+    askCacheInfo() {
+        Sender.post("/api/cacheInfo", {}, res => {
+            if (!res.isFailed()) {
+                let { totalSize, cacheNum, thumbCount } = res.json;
+                this.setState({ totalSize, cacheNum, thumbCount })
+            }
         });
     }
 
-    handleCacheRes(res){
-        if (!res.failed) {
-            let { totalSize, cacheNum } = res;
-            this.setState({totalSize, cacheNum})
-        }else{
-            this.failedTimes++;
-        }
-        this.res = res;
-        this.forceUpdate();
-    }
-
-    handleRes(res){
-        if (!res.failed) {
-            let {dirs} = res;
-            this.setState({
-                dirs: dirs || []
-            })
-        }else{
-            this.res = res;
-            this.failedTimes++;
-            this.forceUpdate();
-        }
-    }
-
-
-    onPrenerate(fastUpdateMode){
+    onPrenerate(fastUpdateMode) {
         const pathInput = ReactDOM.findDOMNode(this.pathInputRef);
         const path = pathInput.value || this.state.prePath;
         AdminUtil.askPregenerate(path, fastUpdateMode);
     }
 
-    onPathChange(e){
+    onPathChange(e) {
         this.setState({
-            prePath : _.isString(e)? e :  e.target.value
+            prePath: _.isString(e) ? e : e.target.value
         })
     }
 
-    cleanCache(minized){
+    cleanCache(minized) {
         Swal.fire({
             title: "Clean Cache",
             showCancelButton: true,
@@ -96,18 +91,18 @@ export default class AdminPage extends Component {
             cancelButtonText: 'No'
         }).then((result) => {
             if (result.value === true) {
-                Sender.simplePost('/api/cleanCache', {}, res =>{
+                Sender.post('/api/cleanCache', {}, res => {
                     this.askCacheInfo()
                 });
-            } 
+            }
         });
     }
 
-    renderHistory(){
-        const history = clientUtil.getHistoryFromCookie();
+    renderHistory() {
+        const { history } = this.state;
 
-       const groupByDay =  _.groupBy(history, e => {
-            let d = new Date(e[0].getTime());
+        const groupByDay = _.groupBy(history, e => {
+            let d = new Date(e.time);
             d.setHours(0);
             d.setMinutes(0);
             d.setSeconds(0);
@@ -115,31 +110,42 @@ export default class AdminPage extends Component {
             return d.getTime();
         });
 
-        const historyDom =  _.keys(groupByDay).map(key => {
-            debugger
+        let keys = _.keys(groupByDay);
+        keys = _.sortBy(keys, e => -e);
+
+        const historyDom = keys.map(key => {
             const timeStr = dateFormat(new Date(parseInt(key)), "dddd, mmmm dS, yyyy");
             let items = groupByDay[key];
 
-            items = _.sortBy(items, e => e[0].getTime());
+            items = _.sortBy(items, e => -e.time);
 
             const dayHistory = items.map(e => {
-                const filePath = e[1];
-                const toUrl =  clientUtil.getOneBookLink(filePath);
-    
+                const filePath = e.filePath;
+                const toUrl = util.isVideo(filePath)? 
+                              clientUtil.getVideoPlayerLink(filePath) : 
+                              clientUtil.getOneBookLink(filePath);
+
+                const cn = classNames("icon", {
+                    "far fa-file-video": util.isVideo(filePath),
+                    "fas fa-book": util.isCompress(filePath),
+                    "far fa-folder": !util.isVideo(filePath) && !util.isCompress(filePath)
+                });
+
                 return (
-                    <Link to={toUrl}  key={filePath} className={"history-link"}>
+                    <Link to={toUrl} key={filePath} className={"history-link"}>
                         <div className="history-one-line-list-item" key={filePath}>
-                            <span className="file-text" title={filePath}> {getBaseName(filePath)}</span>
+                            <span className={cn} /> 
+                            <span className="file-text" title={filePath}> {getBaseName(filePath)||filePath}</span>
                         </div>
                     </Link>);
-    
+
             })
 
             return (
-                <div className="history-day-section">
+                <div className="history-day-section" key={key}>
                     <div className="date-text">
-                         <span>{timeStr}</span>
-                        <span>{`${items.length} items`}</span> 
+                        <span>{timeStr}</span>
+                        <span>{`${items.length} items`}</span>
                     </div>
                     {dayHistory}
                 </div>
@@ -160,40 +166,41 @@ export default class AdminPage extends Component {
         //         </Link>);
 
         // })
-        
+
         return (
-        <div className="history-section admin-section">
-            <div className="admin-section-title"> Recent Read</div>
-            <div className="admin-section-content">
-                {historyDom}
-            </div>
-        </div>)
+            <div className="history-section admin-section">
+                <div className="admin-section-title"> Recent Read</div>
+                <div className="admin-section-content">
+                    {historyDom}
+                </div>
+            </div>)
     }
 
-    getPasswordInput(){
+    getPasswordInput() {
         const pathInput = ReactDOM.findDOMNode(this.passwordInputRef);
         const text = (pathInput && pathInput.value) || "";
         return text;
     }
 
-    setPasswordCookie(){
+    setPasswordCookie() {
         const text = this.getPasswordInput();
         Cookie.set("password", text, { expires: 3 });
         this.forceUpdate();
     }
 
-    renderPasswordInput(){
+    renderPasswordInput() {
         let content;
-        if(clientUtil.isAuthorized()){
+        const { etc_config } = this.context;
+        if (clientUtil.isAuthorized(etc_config)) {
             content = (<div className="admin-section-title"> You are authorized to move/delete files. </div>)
-        }else{
+        } else {
             content = (<React.Fragment>
-                        <div className="admin-section-title">Enter password to move/delete file </div>
-                        <div className="admin-section-content">
-                        <input className="admin-intput" ref={pathInput => this.passwordInputRef = pathInput}
-                                    placeholder="...type here"  onChange={this.setPasswordCookie.bind(this)}/>
-                        </div>
-                        </React.Fragment>);
+                <div className="admin-section-title">Enter password to move/delete file </div>
+                <div className="admin-section-content">
+                    <input className="admin-intput" ref={pathInput => this.passwordInputRef = pathInput}
+                        placeholder="...type here" onChange={this.setPasswordCookie.bind(this)} />
+                </div>
+            </React.Fragment>);
         }
 
         return (
@@ -203,36 +210,36 @@ export default class AdminPage extends Component {
         )
     }
 
-    onclickShutDown(){
+    onclickShutDown() {
         Swal.fire({
             title: "Remote Shutdown",
-            text:  "Do you want to shut down your computer?",
+            text: "Do you want to shut down your computer?",
             showCancelButton: true,
             confirmButtonText: 'Yes',
             cancelButtonText: 'No'
         }).then((result) => {
             if (result.value === true) {
-                Sender.post('/api/shutdownServer', {}, res =>{
+                Sender.post('/api/shutdownServer', {}, res => {
                     //send another request  to check if shut down?
                     alert("You computer is shut down");
                 });
-            } 
+            }
         });
     }
 
- 
 
-    renderMinifyQueue(){
+
+    renderMinifyQueue() {
         const { minifyZipQue } = this.state;
         let items;
-        if(!minifyZipQue || minifyZipQue.length === 0){
+        if (!minifyZipQue || minifyZipQue.length === 0) {
             items = "Empty Queue"
-        }else{
+        } else {
             items = minifyZipQue.map(e => {
                 return <div>{e} </div>
             });
         }
-        
+
         return (
             <div className="admin-section">
                 <div className="admin-section-title"> Zip Minify Queue</div>
@@ -242,29 +249,29 @@ export default class AdminPage extends Component {
             </div>)
     }
 
-    renderRemoteShutDown(){
-        if(clientUtil.isLocalHost() || !clientUtil.isAuthorized()){
+    renderRemoteShutDown() {
+        const { etc_config } = this.context;
+        if (clientUtil.isLocalHost() || !clientUtil.isAuthorized(etc_config)) {
             return;
         }
 
-       return <button onClick={this.onclickShutDown.bind(this)}> Recomote shutdown </button>;
+        return <button onClick={this.onclickShutDown.bind(this)}> Recomote shutdown </button>;
     }
 
-    render(){
+    render() {
         document.title = "Admin"
-        const folder_list = this.state.dirs.concat("All_Pathes");
+        let folder_list = this.state.dirs.slice();
+        folder_list.unshift("All_Pathes");
 
-        const { totalSize, cacheNum } = this.state
+        const { totalSize, cacheNum, thumbCount } = this.state
         const size = totalSize && clientUtil.filesizeUitl(totalSize);
         let cacheInfo;
 
-        if(size){
-            cacheInfo = 
+        cacheInfo =(
             <div className="cache-info">
-                <div className="cache-info-row">{`total size: ${size}`} </div>
-                <div className="cache-info-row">{`${cacheNum} files can be deleted` } </div>
-            </div>
-        }
+                <div className="cache-info-row">{`cache size: ${size}`} </div>
+                <div className="cache-info-row">{`cache file number: ${cacheNum}`} </div>
+            </div>);
 
         return (
             <div className="admin-container container">
@@ -273,11 +280,12 @@ export default class AdminPage extends Component {
                 <div className="admin-section">
                     <div className="admin-section-title"> Pregenerate Thumbnail and Update Internal Database</div>
                     <div className="admin-section-content">
-                        <RadioButtonGroup checked={folder_list.indexOf(this.state.prePath)} 
-                                        options={folder_list} name="pregenerate" onChange={this.onPathChange.bind(this)}/>
-                        <input className="admin-intput" ref={pathInput => this.pathInputRef = pathInput} placeholder="...or any other path"/>
-                        <div className="submit-button" onClick={this.onPrenerate.bind(this)}>Full Update</div>
-                        <div className="submit-button" onClick={this.onPrenerate.bind(this, true)}>Fast Update</div>
+                        <div className=""> {`thumbnail: ${thumbCount || 0}`} </div>
+                        <RadioButtonGroup checked={folder_list.indexOf(this.state.prePath)}
+                            options={folder_list} name="pregenerate" onChange={this.onPathChange.bind(this)} />
+                        <input className="admin-intput" ref={pathInput => this.pathInputRef = pathInput} placeholder="...or any other path" />
+                        <div className="submit-button" onClick={this.onPrenerate.bind(this)}>Full Update (Regenerate all data and thumbnail)</div>
+                        <div className="submit-button" onClick={this.onPrenerate.bind(this, true)}>Fast Update (Only generate for new file)</div>
                     </div>
                 </div>
 
@@ -291,19 +299,19 @@ export default class AdminPage extends Component {
                 </div>
 
                 {this.renderHistory()}
-
                 {this.renderMinifyQueue()}
-
                 {this.renderRemoteShutDown()}
 
-                <div className="author-link"> 
-                        <a className="fab fa-github" title="Aji47's Github" href="https://github.com/hjyssg/ShiguReader" target="_blank"> Created By Aji47 </a> 
+                <div className="author-link">
+                    <a className="fab fa-github" title="Aji47's Github" href="https://github.com/hjyssg/ShiguReader" target="_blank"> Created By Aji47 </a>
                 </div>
             </div>)
-        
+
     }
 }
 
 AdminPage.propTypes = {
     res: PropTypes.object
 };
+
+AdminPage.contextType = GlobalContext;

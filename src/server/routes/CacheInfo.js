@@ -4,17 +4,22 @@ const router = express.Router();
 const db = require("../models/db");
 const util = global.requireUtil();
 const { isDisplayableInOnebook } = util;
+const thumbnailDb = require("../models/thumbnailDb");
 
-router.get('/api/cacheInfo', (req, res) => {
+
+router.post('/api/cacheInfo', (req, res) => {
     const cacheFileToInfo = db.getCacheFileToInfo();
-    const cacheFiles =  db.getAllCacheFilePathes().filter(isDisplayableInOnebook);
+    const cacheFiles = db.getAllCacheFilePathes().filter(isDisplayableInOnebook);
     let totalSize = 0;
 
     cacheFiles.forEach(e => {
-        totalSize += cacheFileToInfo[e].size;
+        if(cacheFileToInfo[e]){
+            totalSize +=  cacheFileToInfo[e].size;
+        }
     })
 
     res.send({
+        thumbCount: thumbnailDb.getThumbCount(),
         totalSize: totalSize,
         cacheNum: cacheFiles.length
     })

@@ -1,122 +1,155 @@
 
 const serverUtil = require("../serverUtil");
 const db = require("../models/db");
-const { getFileCollection, getImgFolderInfo } = db;
+const { getImgFolderInfo } = db;
 const parse = serverUtil.parse;
 const zipInfoDb = require("../models/zipInfoDb");
-const { getZipInfo }  = zipInfoDb;
+const { getZipInfo } = zipInfoDb;
 const util = global.requireUtil();
-const {escapeRegExp} = util;
 const path = require('path');
 const _ = require('underscore');
+const isWindows = require('is-windows');
+const pathUtil = require("../pathUtil");
+const { isSub } = pathUtil;
+const historyDb = require("../models/historyDb");
 
-function isEqual(a, b){
+
+function isEqual(a, b) {
     a = a || "";
     b = b || "";
     return a.toLowerCase() === b.toLowerCase();
 }
 
-function searchByTagAndAuthor(tag, author, text, onlyNeedFew) {
+function splitRows(rows, text){
+    let zipResult = [];
+    let dirResults = [];
+    let imgFolders = {};
+    const textInLowerCase = text.toLowerCase();
+
+    rows.forEach(row => {
+        const dirName = path.basename(row.dirPath);
+        const byDir = dirName.toLowerCase().includes(textInLowerCase);
+        const byFn = row.fileName.toLowerCase().includes(textInLowerCase);
+
+        if(row.isDisplayableInExplorer && (byFn || byDir )){
+            //for file, its name or its dir name
+            zipResult.push(row);
+        }else if(row.isDisplayableInOnebook && byDir){
+            imgFolders[dirName] = imgFolders[dirName] || [];
+            imgFolders[dirName].push(row.filePath);
+        }else if(row.isFolder && byFn){
+            //folder check its name 
+            dirResults.push(row);
+        } 
+    })
+
+    dirResults = dirResults.map(obj => { return obj.filePath; });
+    dirResults = _.unique(dirResults);
+
+    return {
+        zipResult,
+        dirResults,
+        imgFolders
+    }
+}
+
+async function searchOnEverything(text){
+    const everything_connector = require("../../tools/everything_connector");	
+    const etc_config = global.etc_config;
+    const port = etc_config && etc_config.everything_http_server_port;
+    const {cachePath, thumbnailFolderPath} = global;
+
+    function isNotAllow(fp){
+        const arr = [cachePath, thumbnailFolderPath ];
+        return arr.some(e => {
+            if(isEqual(fp, e) || isSub(e, fp)){
+                return true;
+            }
+        })
+    }
+
+    const config = {	
+        port,
+        filter: (fp, info) => {
+            if(isNotAllow(fp)){
+                return false;
+            }
+
+            if(info.type === "folder"){
+                return true;
+            }
+
+            if(util.isDisplayableInExplorer(fp)){
+                return true;
+            }
+        }
+    };
+
+    
+    if(port && isWindows()){
+        return await everything_connector.searchByText(text, config);
+    }
+}
+
+async function searchByText(text) {
+    const sqldb = db.getSQLDB();
+    let sql = `SELECT * FROM file_table WHERE INSTR(filePath, ?) > 0`;
+    let rows = await sqldb.allSync(sql, [text]);
+    return splitRows(rows, text);
+}
+
+async function searchByTagAndAuthor(tag, author, text, onlyNeedFew) {
     let beg = (new Date).getTime()
     const fileInfos = {};
 
-    let results;
-    let extraResults = [];
-    let dirResults;
-    let imgFolders = {};
-    if(text){
-        const textInLowerCase = text.toLowerCase();
-        const reg = escapeRegExp(text);
-        results = getFileCollection().chain()
-                      .find({'fileName': { '$regex' : reg }, isDisplayableInExplorer: true });
+    const all_text = tag || author || text;
+    const searchEveryPromise =  searchOnEverything(all_text)
+    let temp = await searchByText(all_text);
+    let zipResult = temp.zipResult;
+    let dirResults = temp.dirResults;
+    let imgFolders = temp.imgFolders;
 
-        dirResults = getFileCollection().chain()
-                      .find({'filePath': { '$regex' : reg }, isDisplayableInExplorer: true })
-                      .where(obj => {
-                          const fp =  path.dirname(obj.filePath);
-                          return fp.toLowerCase().includes(textInLowerCase);
-                      }).data();
-    }else if(author){
-        const reg = escapeRegExp(author);
-        let groups = [];
-
-        results = getFileCollection().chain()
-                      .find({'$or': [{'authors': { '$regex' : reg }}, {'group': { '$regex' : reg }}], 
-                      isDisplayableInExplorer: true })
-                      .where(obj => {
-                        const result = parse(obj.fileName);
-                        const pass =  isEqual(result.author, author) || isEqual(result.group, author) || (result.authors && result.authors.includes(author));
-                        if(pass && result.group){
-                            //find out which group this author belong
-                            groups.push(result.group);
-                        }
-                        return pass;
-                      });
-
-        if(groups.length > 0){
-            const byFeq = _.countBy(groups, e => e);
-            groups = _.sortBy(_.keys(byFeq), e => -byFeq[e]);
-            extraResults = getFileCollection().find({'authors': groups[0] , 
-                                                     'group': {'$len': 0 }, 
-                                                     isDisplayableInExplorer: true });
-        }
-    }else if(tag){
-        const reg = escapeRegExp(tag);
-        results = getFileCollection().chain()
-                      .find({'tags': { '$regex' : reg }, isDisplayableInExplorer: true })
-                      .where(obj => {
-                        const tagArr = obj.tags.split(serverUtil.sep);
-                        return tagArr.some(e => isEqual(tag, e));
-                      });
-    }
-    
-    const text2 =  tag || author || text;
-    const text2InLowerCase = text2.toLowerCase();
-    const reg2 = escapeRegExp(text2);
-    const img_files_results = getFileCollection()
-                        .chain()
-                        .find({'filePath': { '$regex' : reg2 }, isDisplayableInOnebook: true })
-                        .where(obj =>{
-                            const fp =  path.dirname(obj.filePath);
-                            return fp.toLowerCase().includes(text2InLowerCase);
-                        })
-                        .data();
-
-    img_files_results.forEach(obj => {
-        //reduce by its parent folder
-        const pp = path.dirname(obj.filePath);
-        imgFolders[pp] = imgFolders[pp] || [];
-        imgFolders[pp].push(obj.filePath);
-        });
-
-    if(onlyNeedFew){
-        results = results.limit(5);
+    const at_text = tag || author;
+    if (at_text) {
+        const sqldb = db.getSQLDB();
+        //inner joiner then group by
+        let sql = `SELECT a.* ` 
+        + `FROM file_table AS a INNER JOIN tag_table AS b `
+        + `ON a.filePath = b.filePath AND INSTR(b.tag, ?) > 0`;
+        let rows = await sqldb.allSync(sql, [at_text]);
+        const tag_obj = splitRows(rows, at_text);
+        zipResult = tag_obj.zipResult;
+        dirResults = tag_obj.dirResults;
+        imgFolders = tag_obj.imgFolders;
     }
 
-    let finalResult = (results && results.data())||[];
-    finalResult = finalResult.concat(extraResults);
-
-    finalResult.forEach(obj => {
+    zipResult.forEach(obj => {
         const pp = obj.filePath;
         fileInfos[pp] = db.getFileToInfo(pp);
     })
 
-    let _dirs = dirResults && dirResults.map(obj =>{
-        const parentPath = path.resolve(obj.filePath, "..");
-        return parentPath;
-    });
-    _dirs = _dirs && _.unique(_dirs);
+    const imgFolderInfo = getImgFolderInfo(imgFolders);
+    const { getThumbnails } = serverUtil.common;
+    const files = _.keys(fileInfos);
+    const all_pathes = [].concat(files, _.keys(imgFolders));
+    const fileNameToReadTime = await historyDb.getFileReadTime(all_pathes);
+
+    let esObj = await searchEveryPromise;
+    if(esObj){
+        dirResults = _.uniq(dirResults.concat(esObj.dirResults));
+        _.extend(fileInfos, esObj.fileInfos)
+    }
 
     let end = (new Date).getTime();
     // console.log((end - beg)/1000, "to search");
-
-    const imgFolderInfo = getImgFolderInfo(imgFolders);
-
-    const getThumbnails = serverUtil.common.getThumbnails;
-    const files = _.keys(fileInfos);
-    return { tag, author, fileInfos, 
-             imgFolders, imgFolderInfo, 
-             dirs: _dirs, thumbnails: getThumbnails(files), zipInfo: getZipInfo(files) };
+    return {
+        tag, author, fileInfos,
+        imgFolders, imgFolderInfo,
+        dirs: dirResults, 
+        thumbnails: getThumbnails(files), 
+        zipInfo: getZipInfo(files),
+        fileNameToReadTime
+    };
 }
 
 module.exports = searchByTagAndAuthor;

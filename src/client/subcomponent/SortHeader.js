@@ -1,35 +1,55 @@
-import React, { Component } from 'react';
+import React, { PureComponent } from 'react';
 import '../style/SortHeader.scss';
 const classNames = require('classnames');
 
 
 //default is 0
+function parse(value){
+    const token = value.split("_");
+    const key = token[0];
+    const isUp = token[1] === "up";
 
-export default class SortHeader extends Component {
+    return {
+        key,
+        isUp
+    }
+}
+
+export default class SortHeader extends PureComponent {
     static defaultProps = {
-        
+
     };
 
-    render(){
-        const {options, onChange, value, className} = this.props;
-        
+    onClick(option, previousValue){
+        const { onChange } = this.props;
+
+        const { key, isUp } = parse(previousValue);
+        let next = `${option}_${(isUp ? "down" : "up")}`;
+        if(key !== option){
+            next = `${option}_down`;
+        }else{
+            next = `${option}_${(isUp ? "down" : "up")}`;
+        }
+        onChange(next);
+    }
+
+    render() {
+        const { options, onChange, value, className } = this.props;
+
         // <i class="fas fa-arrow-up"></i>
         // <i class="fas fa-sort-down"></i>
-        const token = value.split("_");
-        const key = token[0];
-        const isUp = token[1] === "up";
+        const { key, isUp } = parse(value);
 
         const items = options.map(e => {
             let icon;
-            if(e === key){
-                if(isUp){
+            if (e === key) {
+                if (isUp) {
                     icon = <i className="fas fa-arrow-up"></i>;
-                }else{
+                } else {
                     icon = <i className="fas fa-arrow-down"></i>;
                 }
             }
-            const next = `${e}_${(isUp? "down": "up")}`;
-            return (<div key={e} className="sort-item" onClick={()=>onChange(next)}> {icon} {e} </div>)
+            return (<div key={e} className="sort-item" onClick={() => this.onClick(e, value)}> {icon} {e} </div>)
         })
 
         return (<div className={classNames("sort-header", className)}>{items}</div>)
